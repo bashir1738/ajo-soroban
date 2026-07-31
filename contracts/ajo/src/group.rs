@@ -1,10 +1,10 @@
-/// Group lifecycle: create, join, start.
-use soroban_sdk::{Address, Env, String, Vec};
+use soroban_sdk::{Address, Env, String, Symbol, Vec};
 
 use crate::errors::AjoError;
 use crate::storage::{
-    add_participant_group, increment_group_id, load_config, load_state, save_config,
-    save_participant, save_state,
+    add_participant_group, increment_group_id, increment_total_groups, index_group_by_status,
+    load_config, load_state, remove_group_from_status_index, save_config, save_participant,
+    save_state,
 };
 use crate::types::{GroupConfig, GroupState, GroupStatus, ParticipantRecord};
 
@@ -53,6 +53,10 @@ pub fn create_group(
     save_config(env, group_id, &config);
     save_state(env, group_id, &state);
 
+    increment_total_groups(env);
+    index_group_by_status(env, group_id, &GroupStatus::Open);
+    env.events().publish((Symbol::new(env, "circle_created"), group_id), ());
+
     // Admin auto-joins as first participant (rotation slot 0).
     _join(env, group_id, admin, &config, state);
 
@@ -96,6 +100,10 @@ fn _join(
         state.status = GroupStatus::Active;
         state.cycle_start_ledger = env.ledger().sequence();
         state.next_payout_ledger = env.ledger().sequence() + config.cycle_interval_ledgers;
+        
+        remove_group_from_status_index(env, group_id, &GroupStatus::Open);
+        index_group_by_status(env, group_id, &GroupStatus::Active);
+        env.events().publish((Symbol::new(env, "circle_activated"), group_id), ());
     }
 
     save_state(env, group_id, &state);
