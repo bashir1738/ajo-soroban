@@ -1,7 +1,7 @@
 use soroban_sdk::{Address, Env, Vec};
 
 use crate::errors::AjoError;
-use crate::types::{DataKey, GroupConfig, GroupState, ParticipantRecord, VaultDeposit};
+use crate::types::{DataKey, GroupConfig, GroupState, GroupStatus, ParticipantRecord, VaultDeposit};
 
 // Storage rent bump constants.
 // Soroban charges rent per ledger entry; bumping TTL keeps entries alive.
@@ -25,6 +25,23 @@ pub fn increment_group_id(env: &Env) -> u32 {
         .instance()
         .set(&DataKey::NextGroupId, &(id + 1));
     id
+}
+
+// ── TotalGroups ────────────────────────────────────────────────────────────
+
+pub fn get_total_groups(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get::<_, u32>(&DataKey::TotalGroups)
+        .unwrap_or(0)
+}
+
+pub fn increment_total_groups(env: &Env) -> u32 {
+    let count = get_total_groups(env) + 1;
+    env.storage()
+        .instance()
+        .set(&DataKey::TotalGroups, &count);
+    count
 }
 
 // ── GroupConfig ────────────────────────────────────────────────────────────
@@ -129,6 +146,49 @@ pub fn add_participant_group(env: &Env, participant: &Address, group_id: u32) {
     let mut groups = get_participant_groups(env, participant);
     groups.push_back(group_id);
     env.storage().persistent().set(&key, &groups);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, MIN_TTL, BUMP_AMOUNT);
+}
+
+// ── Status Groups reverse index ────────────────────────────────────────────
+
+pub fn get_groups_by_status(env: &Env, status: &GroupStatus) -> Vec<u32> {
+    let key = DataKey::GroupsByStatus(status.clone());
+    if let Some(groups) = env
+        .storage()
+        .persistent()
+        .get::<_, Vec<u32>>(&key)
+    {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, MIN_TTL, BUMP_AMOUNT);
+        groups
+    } else {
+        Vec::new(env)
+    }
+}
+
+pub fn index_group_by_status(env: &Env, group_id: u32, status: &GroupStatus) {
+    let key = DataKey::GroupsByStatus(status.clone());
+    let mut groups = get_groups_by_status(env, status);
+    if !groups.contains(&group_id) {
+        groups.push_back(group_id);
+        env.storage().persistent().set(&key, &groups);
+    }
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, MIN_TTL, BUMP_AMOUNT);
+}
+
+pub fn remove_group_from_status_index(env: &Env, group_id: u32, status: &GroupStatus) {
+    let key = DataKey::GroupsByStatus(status.clone());
+    let mut groups = get_groups_by_status(env, status);
+    
+    if let Some(index) = groups.first_index_of(group_id) {
+        groups.remove(index);
+        env.storage().persistent().set(&key, &groups);
+    }
     env.storage()
         .persistent()
         .extend_ttl(&key, MIN_TTL, BUMP_AMOUNT);

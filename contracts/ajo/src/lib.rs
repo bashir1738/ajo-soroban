@@ -82,6 +82,65 @@ impl AjoContract {
         storage::get_participant_groups(&env, &participant)
     }
 
+    /// Returns up to limit group IDs for the given status, starting at offset.
+    /// Pass None for status to list across all statuses.
+    pub fn list_groups(env: Env, status: Option<GroupStatus>, offset: u32, limit: u32) -> Vec<u32> {
+        let capped_limit = limit.min(50);
+        let mut result = Vec::new(&env);
+        
+        if let Some(s) = status {
+            let groups = storage::get_groups_by_status(&env, &s);
+            let len = groups.len();
+            let start = offset.min(len);
+            let end = (start + capped_limit).min(len);
+            for i in start..end {
+                result.push_back(groups.get(i).unwrap());
+            }
+        } else {
+            let total = storage::get_total_groups(&env);
+            let start = offset + 1;
+            let end = start + capped_limit;
+            for id in start..end {
+                if id <= total {
+                    result.push_back(id);
+                }
+            }
+        }
+        
+        result
+    }
+
+    /// Total count of groups in a given status (or all groups if None).
+    pub fn count_groups(env: Env, status: Option<GroupStatus>) -> u32 {
+        if let Some(s) = status {
+            storage::get_groups_by_status(&env, &s).len()
+        } else {
+            storage::get_total_groups(&env)
+        }
+    }
+
+    /// Bulk-resolve configs for a slice of IDs in one call (avoids N round-trips).
+    pub fn get_configs(env: Env, group_ids: Vec<u32>) -> Vec<GroupConfig> {
+        let mut result = Vec::new(&env);
+        for id in group_ids.iter() {
+            if let Ok(config) = group::get_config(&env, id) {
+                result.push_back(config);
+            }
+        }
+        result
+    }
+
+    /// Bulk-resolve states for a slice of IDs in one call.
+    pub fn get_states(env: Env, group_ids: Vec<u32>) -> Vec<GroupState> {
+        let mut result = Vec::new(&env);
+        for id in group_ids.iter() {
+            if let Ok(state) = group::get_state(&env, id) {
+                result.push_back(state);
+            }
+        }
+        result
+    }
+
     // ── Vault ────────────────────────────────────────────────────────────────
 
     /// Deposit `amount` of `token` into a tiered savings vault.

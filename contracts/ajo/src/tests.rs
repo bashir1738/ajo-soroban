@@ -706,3 +706,135 @@ fn test_vault_preview_yield_grows_with_ledgers() {
     let yield_later = t.client().preview_yield(&vault_id);
     assert!(yield_later > yield_now, "yield should grow over time");
 }
+
+// ── Status Index Queries ──────────────────────────────────────────────────────
+
+#[test]
+fn test_list_groups_open_returns_correct_ids() {
+    let t = TestEnv::new();
+    let admin = Address::generate(&t.env);
+    let id1 = t.client().create_group(&admin, &t.name("Open1"), &t.token, &100, &100, &5);
+    let id2 = t.client().create_group(&admin, &t.name("Open2"), &t.token, &100, &100, &5);
+
+    let open_groups = t.client().list_groups(&Some(GroupStatus::Open), &0, &10);
+    assert!(open_groups.contains(id1));
+    assert!(open_groups.contains(id2));
+}
+
+#[test]
+fn test_list_groups_pagination_offset() {
+    let t = TestEnv::new();
+    let admin = Address::generate(&t.env);
+    let g1 = t.client().create_group(&admin, &t.name("G1"), &t.token, &100, &100, &5);
+    let g2 = t.client().create_group(&admin, &t.name("G2"), &t.token, &100, &100, &5);
+    let g3 = t.client().create_group(&admin, &t.name("G3"), &t.token, &100, &100, &5);
+
+    let page1 = t.client().list_groups(&Some(GroupStatus::Open), &0, &2);
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1.get(0).unwrap(), g1);
+    assert_eq!(page1.get(1).unwrap(), g2);
+    
+    let page2 = t.client().list_groups(&Some(GroupStatus::Open), &2, &2);
+    assert_eq!(page2.len(), 1);
+    assert_eq!(page2.get(0).unwrap(), g3);
+}
+
+#[test]
+fn test_count_groups_by_status() {
+    let t = TestEnv::new();
+    let admin = Address::generate(&t.env);
+    t.client().create_group(&admin, &t.name("G1"), &t.token, &100, &100, &5);
+    t.client().create_group(&admin, &t.name("G2"), &t.token, &100, &100, &5);
+
+    let count = t.client().count_groups(&Some(GroupStatus::Open));
+    assert_eq!(count, 2);
+    
+    let all_count = t.client().count_groups(&None);
+    assert_eq!(all_count, 2);
+}
+
+#[test]
+fn test_status_index_updates_on_activate() {
+    let t = TestEnv::new();
+    let (gid, _) = t.create_group_with_n_members(2);
+
+    let open_count = t.client().count_groups(&Some(GroupStatus::Open));
+    assert_eq!(open_count, 0);
+
+    let active_count = t.client().count_groups(&Some(GroupStatus::Active));
+    assert_eq!(active_count, 1);
+    
+    let active_groups = t.client().list_groups(&Some(GroupStatus::Active), &0, &10);
+    assert!(active_groups.contains(gid));
+}
+
+#[test]
+fn test_status_index_updates_on_complete() {
+    let t = TestEnv::new();
+    let (gid, members) = t.create_group_with_n_members(2);
+    
+    for m in &members { t.mint(m, 1_000_000 * 2); }
+    
+    for _ in 0..2 {
+        for m in &members {
+            t.client().contribute(&gid, m);
+        }
+        t.client().claim_payout(&gid);
+    }
+    
+    let active_count = t.client().count_groups(&Some(GroupStatus::Active));
+    assert_eq!(active_count, 0);
+
+    let complete_count = t.client().count_groups(&Some(GroupStatus::Complete));
+    assert_eq!(complete_count, 1);
+    
+    let complete_groups = t.client().list_groups(&Some(GroupStatus::Complete), &0, &10);
+    assert!(complete_groups.contains(gid));
+}
+
+#[test]
+fn test_get_configs_bulk() {
+    let t = TestEnv::new();
+    let admin = Address::generate(&t.env);
+    let g1 = t.client().create_group(&admin, &t.name("G1"), &t.token, &100, &100, &5);
+    let g2 = t.client().create_group(&admin, &t.name("G2"), &t.token, &100, &100, &5);
+
+    let mut ids = soroban_sdk::Vec::new(&t.env);
+    ids.push_back(g1);
+    ids.push_back(g2);
+
+    let configs = t.client().get_configs(&ids);
+    assert_eq!(configs.len(), 2);
+    assert_eq!(configs.get(0).unwrap().name, t.name("G1"));
+    assert_eq!(configs.get(1).unwrap().name, t.name("G2"));
+}
+
+#[test]
+fn test_get_states_bulk() {
+    let t = TestEnv::new();
+    let admin = Address::generate(&t.env);
+    let g1 = t.client().create_group(&admin, &t.name("G1"), &t.token, &100, &100, &5);
+    let g2 = t.client().create_group(&admin, &t.name("G2"), &t.token, &100, &100, &5);
+
+    let mut ids = soroban_sdk::Vec::new(&t.env);
+    ids.push_back(g1);
+    ids.push_back(g2);
+
+    let states = t.client().get_states(&ids);
+    assert_eq!(states.len(), 2);
+    assert_eq!(states.get(0).unwrap().status, GroupStatus::Open);
+    assert_eq!(states.get(1).unwrap().status, GroupStatus::Open);
+}
+
+#[test]
+fn test_list_groups_limit_capped_at_50() {
+    let t = TestEnv::new();
+    let admin = Address::generate(&t.env);
+    for _ in 0..51 {
+        t.client().create_group(&admin, &t.name("G"), &t.token, &100, &100, &5);
+    }
+    
+    let list = t.client().list_groups(&Some(GroupStatus::Open), &0, &100);
+    assert_eq!(list.len(), 50);
+}
+

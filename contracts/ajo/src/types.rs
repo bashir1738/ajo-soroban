@@ -107,4 +107,8 @@ pub enum DataKey {
     NextVaultId,
     /// VaultDeposit keyed by vault_id.
     Vault(u32),
+    /// Reverse index of group IDs by their GroupStatus.
+    GroupsByStatus(GroupStatus),
+    /// Monotonically increasing counter for all groups ever created.
+    TotalGroups,
 }
