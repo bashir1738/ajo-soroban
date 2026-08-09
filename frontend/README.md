@@ -1,5 +1,5 @@
 # Ajo Web App
-
+ 
 The Ajo web frontend — a **Next.js 15** app (App Router) styled with **Tailwind CSS**,
 connecting to the [Ajo Soroban contract](../contracts) via the Stellar SDK and the
 Freighter wallet extension.
