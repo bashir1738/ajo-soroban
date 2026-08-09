@@ -1,8 +1,10 @@
-/// Contribution and payout logic for one rotation cycle.
-use soroban_sdk::{token, Address, Env, Vec};
+use soroban_sdk::{token, Address, Env, Symbol, Vec};
 
 use crate::errors::AjoError;
-use crate::storage::{load_config, load_participant, load_state, save_participant, save_state};
+use crate::storage::{
+    index_group_by_status, load_config, load_participant, load_state,
+    remove_group_from_status_index, save_participant, save_state,
+};
 use crate::types::{GroupStatus, ParticipantRecord};
 
 /// Deposit the cycle contribution from `participant`.
@@ -108,6 +110,10 @@ pub fn claim_payout(env: &Env, group_id: u32) -> Result<Address, AjoError> {
     // Mark the rotation complete when all participants have been paid out.
     if state.current_cycle >= state.participants.len() {
         state.status = GroupStatus::Complete;
+        
+        remove_group_from_status_index(env, group_id, &GroupStatus::Active);
+        index_group_by_status(env, group_id, &GroupStatus::Complete);
+        env.events().publish((Symbol::new(env, "circle_completed"), group_id), ());
     }
 
     save_state(env, group_id, &state);
