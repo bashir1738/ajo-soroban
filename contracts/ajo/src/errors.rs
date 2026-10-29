@@ -38,4 +38,11 @@ pub enum AjoError {
     VaultLocked = 15,
     /// Deposit amount is below the tier's minimum.
     InsufficientDeposit = 16,
+    // ── Treasury & Receipt errors (17-19) ──────────────────────────────────
+    /// Treasury reserve is insufficient to back this deposit at the target reserve ratio.
+    InsufficientReserve = 17,
+    /// Receipt token contract is not configured for this tier.
+    ReceiptTokenNotSet = 18,
+    /// Burning receipt token failed.
+    ReceiptBurnFailed = 19,
 }
