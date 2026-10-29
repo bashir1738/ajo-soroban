@@ -1,7 +1,10 @@
 use soroban_sdk::{Address, Env, Vec};
 
 use crate::errors::AjoError;
-use crate::types::{DataKey, GroupConfig, GroupState, GroupStatus, ParticipantRecord, VaultDeposit};
+use crate::types::{
+    DataKey, GroupConfig, GroupState, GroupStatus, ParticipantRecord, TreasuryState, VaultDeposit,
+    VaultTier,
+};
 
 // Storage rent bump constants.
 // Soroban charges rent per ledger entry; bumping TTL keeps entries alive.
@@ -232,4 +235,45 @@ pub fn load_vault(env: &Env, vault_id: u32) -> Result<VaultDeposit, AjoError> {
         .persistent()
         .extend_ttl(&key, MIN_TTL, BUMP_AMOUNT);
     Ok(vault)
+}
+
+// ── TreasuryState ──────────────────────────────────────────────────────────
+
+pub fn get_treasury(env: &Env) -> TreasuryState {
+    env.storage()
+        .instance()
+        .get::<_, TreasuryState>(&DataKey::Treasury)
+        .unwrap_or(TreasuryState {
+            total_principal: 0,
+            reserve_balance: 0,
+            reserve_ratio_bps: 1500, // 15% default reserve ratio
+        })
+}
+
+pub fn save_treasury(env: &Env, treasury: &TreasuryState) {
+    env.storage().instance().set(&DataKey::Treasury, treasury);
+}
+
+// ── VaultTokenContract ─────────────────────────────────────────────────────
+
+pub fn get_vault_token(env: &Env, tier: &VaultTier) -> Option<Address> {
+    env.storage()
+        .instance()
+        .get::<_, Address>(&DataKey::VaultTokenContract(tier.clone()))
+}
+
+pub fn set_vault_token(env: &Env, tier: &VaultTier, token: &Address) {
+    env.storage()
+        .instance()
+        .set(&DataKey::VaultTokenContract(tier.clone()), token);
+}
+
+// ── Contract Admin ─────────────────────────────────────────────────────────
+
+pub fn get_admin(env: &Env) -> Option<Address> {
+    env.storage().instance().get::<_, Address>(&DataKey::Admin)
+}
+
+pub fn set_admin(env: &Env, admin: &Address) {
+    env.storage().instance().set(&DataKey::Admin, admin);
 }

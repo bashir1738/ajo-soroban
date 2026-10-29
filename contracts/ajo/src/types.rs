@@ -73,6 +73,18 @@ pub enum VaultTier {
     Power,
 }
 
+/// Global treasury reserve state for Vault V2.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TreasuryState {
+    /// Sum of all active vault principals.
+    pub total_principal: i128,
+    /// Tokens available in treasury to pay yield (topped up by admin).
+    pub reserve_balance: i128,
+    /// Target reserve / principal ratio in basis points (e.g. 1500 = 15%).
+    pub reserve_ratio_bps: u32,
+}
+
 /// A single vault deposit record.
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -87,6 +99,8 @@ pub struct VaultDeposit {
     /// Ledger at which funds become claimable; 0 for Flex (always claimable).
     pub maturity_ledger: u32,
     pub claimed: bool,
+    /// Effective dynamic APR at the time of deposit in basis points.
+    pub apr_bps: u32,
 }
 
 // ── Storage key namespacing ────────────────────────────────────────────────
@@ -111,4 +125,10 @@ pub enum DataKey {
     GroupsByStatus(GroupStatus),
     /// Monotonically increasing counter for all groups ever created.
     TotalGroups,
+    /// Global treasury state (instance storage).
+    Treasury,
+    /// Receipt token contract address per VaultTier (instance storage).
+    VaultTokenContract(VaultTier),
+    /// Contract superadmin address (instance storage).
+    Admin,
 }

@@ -8,7 +8,9 @@ mod types;
 mod vault;
 
 pub use errors::AjoError;
-pub use types::{GroupConfig, GroupState, GroupStatus, ParticipantRecord, VaultDeposit, VaultTier};
+pub use types::{
+    GroupConfig, GroupState, GroupStatus, ParticipantRecord, TreasuryState, VaultDeposit, VaultTier,
+};
 
 use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
 
@@ -172,6 +174,43 @@ impl AjoContract {
     /// Preview accrued yield for a vault at the current ledger.
     pub fn preview_yield(env: Env, vault_id: u32) -> Result<i128, AjoError> {
         vault::preview_yield(&env, vault_id)
+    }
+
+    // ── Treasury Reserve Protocol & Dynamic APR (Vault V2) ───────────────────
+
+    /// Admin deposits funds into the protocol yield reserve.
+    pub fn admin_deposit_reserve(
+        env: Env,
+        admin: Address,
+        token: Address,
+        amount: i128,
+    ) -> Result<(), AjoError> {
+        vault::admin_deposit_reserve(&env, admin, token, amount)
+    }
+
+    /// Read-only: returns current treasury reserve state.
+    pub fn get_treasury_state(env: Env) -> TreasuryState {
+        vault::get_treasury_state(&env)
+    }
+
+    /// Read-only: returns current treasury reserve health ratio in bps.
+    pub fn reserve_health(env: Env) -> u32 {
+        vault::reserve_health(&env)
+    }
+
+    /// Read-only: returns current dynamic APR for a vault tier in basis points.
+    pub fn get_current_apr(env: Env, tier: VaultTier) -> u32 {
+        vault::get_current_apr(&env, tier)
+    }
+
+    /// Admin registers a SEP-41 receipt token contract for a vault tier.
+    pub fn set_vault_token(
+        env: Env,
+        admin: Address,
+        tier: VaultTier,
+        token: Address,
+    ) -> Result<(), AjoError> {
+        vault::set_vault_token(&env, admin, tier, token)
     }
 }
 

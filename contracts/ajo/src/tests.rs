@@ -22,6 +22,7 @@ struct TestEnv {
     env: Env,
     contract: Address,
     token: Address,
+    admin: Address,
 }
 
 impl TestEnv {
@@ -32,8 +33,20 @@ impl TestEnv {
         let contract = env.register(AjoContract, ());
         let token_admin = Address::generate(&env);
         let token = env.register_stellar_asset_contract_v2(token_admin);
+        let token_addr = token.address();
 
-        TestEnv { env, contract, token: token.address() }
+        // Seed treasury reserve so baseline vault tests satisfy target reserve ratio (15%)
+        let admin = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_addr).mint(&admin, &10_000_000_000);
+        let client = AjoContractClient::new(&env, &contract);
+        client.admin_deposit_reserve(&admin, &token_addr, &10_000_000_000);
+
+        TestEnv {
+            env,
+            contract,
+            token: token_addr,
+            admin,
+        }
     }
 
     fn client(&self) -> AjoContractClient<'_> {
@@ -836,5 +849,179 @@ fn test_list_groups_limit_capped_at_50() {
     
     let list = t.client().list_groups(&Some(GroupStatus::Open), &0, &100);
     assert_eq!(list.len(), 50);
+}
+
+// ── Vault V2: Treasury Reserve, Dynamic APR, and SEP-41 Receipt Token (Issue #38) ───
+
+#[test]
+fn test_admin_deposit_reserve() {
+    let t = TestEnv::new();
+    let admin = t.admin.clone();
+    let initial_treasury = t.client().get_treasury_state();
+
+    t.mint(&admin, 500_000_000); // 500 USDC
+    t.client().admin_deposit_reserve(&admin, &t.token, &500_000_000);
+
+    let updated_treasury = t.client().get_treasury_state();
+    assert_eq!(
+        updated_treasury.reserve_balance,
+        initial_treasury.reserve_balance + 500_000_000
+    );
+}
+
+#[test]
+fn test_deposit_fails_when_reserve_insufficient() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract = env.register(AjoContract, ());
+    let token_admin = Address::generate(&env);
+    let token = env.register_stellar_asset_contract_v2(token_admin);
+    let token_addr = token.address();
+    let client = AjoContractClient::new(&env, &contract);
+
+    // Seed a tiny reserve of 10 USDC (10_000_000 stroops)
+    let admin = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_addr).mint(&admin, &10_000_000);
+    client.admin_deposit_reserve(&admin, &token_addr, &10_000_000);
+
+    // At 15% reserve ratio, 10 USDC reserve can back at most:
+    // 10_000_000 * 10_000 / 1500 = 66.66 USDC principal.
+    // Depositing 100 USDC (100_000_000 stroops) requires 15 USDC reserve (> 10 USDC).
+    let depositor = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_addr).mint(&depositor, &100_000_000);
+
+    let err = TestEnv::contract_err(
+        client.try_deposit_vault(&depositor, &token_addr, &100_000_000, &VaultTier::Growth),
+    );
+    assert_eq!(err, AjoError::InsufficientReserve);
+}
+
+#[test]
+fn test_dynamic_apr_increases_with_utilization() {
+    let t = TestEnv::new();
+    let owner1 = Address::generate(&t.env);
+    let owner2 = Address::generate(&t.env);
+
+    // Baseline APR at zero total_principal
+    let initial_apr = t.client().get_current_apr(&VaultTier::Flex);
+    assert_eq!(initial_apr, 450); // 4.50% base APR
+
+    // Deposit 1: increases utilization
+    t.mint(&owner1, 100_000_000);
+    t.client().deposit_vault(&owner1, &t.token, &100_000_000, &VaultTier::Flex);
+
+    let apr_after_dep1 = t.client().get_current_apr(&VaultTier::Flex);
+    assert!(
+        apr_after_dep1 > initial_apr,
+        "APR should increase with utilization (initial: {initial_apr}, after: {apr_after_dep1})"
+    );
+
+    // Deposit 2: further increases utilization
+    t.mint(&owner2, 200_000_000);
+    t.client().deposit_vault(&owner2, &t.token, &200_000_000, &VaultTier::Flex);
+
+    let apr_after_dep2 = t.client().get_current_apr(&VaultTier::Flex);
+    assert!(
+        apr_after_dep2 > apr_after_dep1,
+        "APR should increase further with higher utilization (dep1: {apr_after_dep1}, dep2: {apr_after_dep2})"
+    );
+}
+
+#[test]
+fn test_claim_burns_receipt_token() {
+    let t = TestEnv::new();
+    t.env.mock_all_auths_allowing_non_root_auth();
+    let admin = t.admin.clone();
+    let depositor = Address::generate(&t.env);
+
+    // Deploy a mock SEP-41 receipt token contract for Flex tier
+    let receipt_admin = Address::generate(&t.env);
+    let receipt_token = t.env.register_stellar_asset_contract_v2(receipt_admin);
+    let receipt_token_addr = receipt_token.address();
+
+    t.client().set_vault_token(&admin, &VaultTier::Flex, &receipt_token_addr);
+
+    // Deposit: mints receipt tokens to depositor
+    let deposit_amount = 50_000_000; // 50 USDC
+    t.mint(&depositor, deposit_amount);
+    let vault_id = t.client().deposit_vault(&depositor, &t.token, &deposit_amount, &VaultTier::Flex);
+
+    let receipt_client = TokenClient::new(&t.env, &receipt_token_addr);
+    assert_eq!(receipt_client.balance(&depositor), deposit_amount);
+
+    // Claim: burns receipt token from depositor
+    let claimed_total = t.client().claim_vault(&vault_id, &depositor);
+    assert!(claimed_total >= deposit_amount);
+    assert_eq!(receipt_client.balance(&depositor), 0);
+}
+
+#[test]
+fn test_receipt_token_transfer_allows_third_party_claim() {
+    let t = TestEnv::new();
+    t.env.mock_all_auths_allowing_non_root_auth();
+    let admin = t.admin.clone();
+    let depositor = Address::generate(&t.env);
+    let third_party = Address::generate(&t.env);
+
+    // Deploy SEP-41 receipt token
+    let receipt_admin = Address::generate(&t.env);
+    let receipt_token = t.env.register_stellar_asset_contract_v2(receipt_admin);
+    let receipt_token_addr = receipt_token.address();
+
+    t.client().set_vault_token(&admin, &VaultTier::Flex, &receipt_token_addr);
+
+    let deposit_amount = 100_000_000; // 100 USDC
+    t.mint(&depositor, deposit_amount);
+    let vault_id = t.client().deposit_vault(&depositor, &t.token, &deposit_amount, &VaultTier::Flex);
+
+    let receipt_client = TokenClient::new(&t.env, &receipt_token_addr);
+    assert_eq!(receipt_client.balance(&depositor), deposit_amount);
+
+    // Transfer economic right (receipt tokens) to third party
+    receipt_client.transfer(&depositor, &third_party, &deposit_amount);
+    assert_eq!(receipt_client.balance(&third_party), deposit_amount);
+
+    // Third party calls claim_vault and successfully receives payout
+    let initial_balance = t.token_client().balance(&third_party);
+    let claimed_total = t.client().claim_vault(&vault_id, &third_party);
+    assert!(claimed_total >= deposit_amount);
+
+    // Receipt token burned from third party
+    assert_eq!(receipt_client.balance(&third_party), 0);
+    assert_eq!(
+        t.token_client().balance(&third_party),
+        initial_balance + claimed_total
+    );
+}
+
+#[test]
+fn test_reserve_health_below_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract = env.register(AjoContract, ());
+    let token_admin = Address::generate(&env);
+    let token = env.register_stellar_asset_contract_v2(token_admin);
+    let token_addr = token.address();
+    let client = AjoContractClient::new(&env, &contract);
+
+    // Initial reserve: 15 USDC (15_000_000)
+    let admin = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_addr).mint(&admin, &15_000_000);
+    client.admin_deposit_reserve(&admin, &token_addr, &15_000_000);
+
+    // Deposit 100 USDC principal (requires 15 USDC reserve at 15%)
+    let depositor = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_addr).mint(&depositor, &100_000_000);
+    client.deposit_vault(&depositor, &token_addr, &100_000_000, &VaultTier::Flex);
+
+    // Health ratio = 15_000_000 * 10_000 / 100_000_000 = 1500 bps (15%)
+    let health = client.reserve_health();
+    assert_eq!(health, 1500);
+
+    // Zero principal returns 10_000 bps default
+    let empty_env = Env::default();
+    let empty_contract = empty_env.register(AjoContract, ());
+    let empty_client = AjoContractClient::new(&empty_env, &empty_contract);
+    assert_eq!(empty_client.reserve_health(), 10_000);
 }
 
